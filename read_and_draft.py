@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 import os
 import json
-import smtplib
 import imaplib
 import email
-import requests
+import time
+from openai import OpenAI
 
 # ————— Настройки из окружения —————
 IMAP_HOST        = os.getenv('IMAP_HOST')
 IMAP_PORT        = int(os.getenv('IMAP_PORT', 993))
 IMAP_USER        = os.getenv('IMAP_USER')
 IMAP_PASS        = os.getenv('IMAP_PASS')
-SMTP_HOST        = os.getenv('SMTP_HOST')
-SMTP_PORT        = int(os.getenv('SMTP_PORT', 587))
-SMTP_USER        = os.getenv('SMTP_USER')
-SMTP_PASS        = os.getenv('SMTP_PASS')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
+# Папка для черновиков (должна существовать на сервере)
+DRAFTS_FOLDER    = os.getenv('DRAFTS_FOLDER', 'Drafts')
 
 SYSTEM_PROMPT = (
     "Ты — ассистент по email. Проанализируй письмо, "
@@ -25,66 +23,78 @@ SYSTEM_PROMPT = (
 PROCESSED_FILE = 'processed_ids.json'
 # —————————————————————————
 
+# Инициализируем клиент DeepSeek через OpenAI-совместимый SDK
+client = OpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com"
+)
+
 def load_processed():
     if os.path.exists(PROCESSED_FILE):
-        with open(PROCESSED_FILE, 'r') as f:
+        with open(PROCESSED_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return []
 
-def save_processed(processed_ids):
-    with open(PROCESSED_FILE, 'w') as f:
-        json.dump(processed_ids, f)
+def save_processed(ids):
+    with open(PROCESSED_FILE, 'w', encoding='utf-8') as f:
+        json.dump(ids, f, ensure_ascii=False, indent=2)
 
-def fetch_unread(max_count=5):
-    """Возвращает до max_count непрочитанных писем (не меняет флаг UNSEEN)."""
+def fetch_unread(limit=5):
+    """
+    Возвращает до `limit` непрочитанных писем (не меняет флаг UNSEEN).
+    Каждый элемент: (message_id, from, subject, body_text).
+    """
     M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
     M.login(IMAP_USER, IMAP_PASS)
     M.select('INBOX')
     _, data = M.search(None, 'UNSEEN')
-    ids = data[0].split()[:max_count]
-    out = []
-    for mid in ids:
-        _, msg_data = M.fetch(mid, '(RFC822)')
-        msg = email.message_from_bytes(msg_data[0][1])
-        # достаём чистый текст
-        text = ""
+    mids = data[0].split()[:limit]
+    messages = []
+    for mid in mids:
+        _, md = M.fetch(mid, '(RFC822)')
+        msg = email.message_from_bytes(md[0][1])
+        # Достаём текстовую часть
+        body = ""
         for part in msg.walk():
             if part.get_content_type() == 'text/plain':
-                text = part.get_payload(decode=True).decode(errors='ignore')
+                body = part.get_payload(decode=True).decode(errors='ignore')
                 break
-        out.append((mid.decode(), msg['From'], msg['Subject'], text))
+        messages.append((mid.decode(), msg.get('From'), msg.get('Subject'), body))
     M.logout()
-    return out
+    return messages
 
 def generate_reply(body, subject, sender):
-    """Запрос к Deepseek (правильный хост и путь)."""
-    url = "https://api.deepseek.com/chat/completions"
-    headers = {
-        "X-API-Key": DEEPSEEK_API_KEY,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": f"Тема: {subject}\nОт: {sender}\n\n{body}"}
-        ],
-        "max_tokens": 500,
-        "temperature": 0.2
-    }
-    resp = requests.post(url, headers=headers, json=payload)
-    print("Status:", resp.status_code, "Response:", resp.text)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"].strip()
+    """
+    Запрашивает черновик у DeepSeek через SDK.
+    Возвращает строку с ответом или None, если ошибка.
+    """
+    try:
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": f"Тема: {subject}\nОт: {sender}\n\n{body}"}
+            ],
+            max_tokens=500,
+            temperature=0.2,
+            stream=False
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"❌ DeepSeek error: {e}")
+        return None
 
-def send_reply(to, subject, body):
-    srv = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
-    srv.starttls()
-    srv.login(SMTP_USER, SMTP_PASS)
-    message = f"Subject: Re: {subject}\n\n{body}"
-    srv.sendmail(SMTP_USER, to, message)
-    srv.quit()
+def create_draft_imap(to, subject, body):
+    """
+    Создаёт черновик в папке DRAFTS_FOLDER через IMAP APPEND.
+    """
+    msg = f"To: {to}\r\nSubject: Re: {subject}\r\n\r\n{body}"
+    M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    M.login(IMAP_USER, IMAP_PASS)
+    # Флаг \Draft помечает сообщение как черновик
+    date_time = imaplib.Time2Internaldate(time.time())
+    M.append(DRAFTS_FOLDER, '\\Draft', date_time, msg.encode('utf-8'))
+    M.logout()
 
 def main():
     processed = load_processed()
@@ -92,23 +102,21 @@ def main():
 
     for mid, frm, subj, body in messages:
         if mid in processed:
-            print(f"🔁 Письмо {mid} уже обработано — пропускаем.")
+            print(f"🔁 {mid} уже обработано, пропускаем.")
+            continue
+
+        print(f"✉️ Обрабатываем письмо {mid}: «{subj}» от {frm}")
+        draft = generate_reply(body, subj, frm)
+        if not draft:
+            print(f"⚠️ Не удалось сгенерировать черновик для {mid}.")
             continue
 
         try:
-            draft = generate_reply(body, subj, frm)
+            create_draft_imap(frm, subj, draft)
+            print(f"📝 Черновик для {mid} сохранён в папку «{DRAFTS_FOLDER}».")
+            processed.append(mid)
         except Exception as e:
-            print(f"❌ Ошибка при генерации для письма {mid}: {e}")
-            continue
-
-        try:
-            send_reply(frm, subj, draft)
-            print(f"✅ Отправлен ответ на {mid} («{subj}»).")
-        except Exception as e:
-            print(f"❌ Ошибка при отправке ответа для {mid}: {e}")
-            continue
-
-        processed.append(mid)
+            print(f"❌ Ошибка создания черновика для {mid}: {e}")
 
     save_processed(processed)
 
