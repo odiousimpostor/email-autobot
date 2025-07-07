@@ -1,48 +1,17 @@
-name: Email Draft Bot
-
-on:
-  schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Debug environment
-        run: |
-          echo "🗂️  Содержимое рабочей папки:"
-          ls -R .
-          echo ""
-          echo "🐍  Версия Python и список пакетов:"
-          python --version
-          pip list
-          echo ""
-
-      - name: Run draft script
+      - name: Run draft script with Deepseek
         env:
-          IMAP_HOST:      ${{ secrets.IMAP_HOST }}
-          IMAP_PORT:      ${{ secrets.IMAP_PORT }}
-          IMAP_USER:      ${{ secrets.IMAP_USER }}
-          IMAP_PASS:      ${{ secrets.IMAP_PASS }}
-          SMTP_HOST:      ${{ secrets.SMTP_HOST }}
-          SMTP_PORT:      ${{ secrets.SMTP_PORT }}
-          SMTP_USER:      ${{ secrets.SMTP_USER }}
-          SMTP_PASS:      ${{ secrets.SMTP_PASS }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          echo "🚀 Запускаем скрипт read_and_draft.py"
-          python read_and_draft.py
+          IMAP_HOST:       ${{ secrets.IMAP_HOST }}
+          IMAP_PORT:       ${{ secrets.IMAP_PORT }}
+          IMAP_USER:       ${{ secrets.IMAP_USER }}
+          IMAP_PASS:       ${{ secrets.IMAP_PASS }}
+          SMTP_HOST:       ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:       ${{ secrets.SMTP_PORT }}
+          SMTP_USER:       ${{ secrets.SMTP_USER }}
+          SMTP_PASS:       ${{ secrets.SMTP_PASS }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: python read_and_draft.py
