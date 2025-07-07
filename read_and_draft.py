@@ -50,7 +50,7 @@ def generate_reply(body, subject, sender):
     ]
     try:
         resp = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o",
             messages=messages,
             temperature=0.2,
             max_tokens=500
