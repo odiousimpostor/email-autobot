@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import os, base64, json, smtplib
 import imaplib, email
-import openai               # <- импорт модуля для исключений
-from openai import OpenAI  # <- клиент нового SDK
+import openai
+from openai import OpenAI
 
 # Настройки из окружения
 IMAP_HOST      = os.getenv('IMAP_HOST')
@@ -38,27 +38,28 @@ def fetch_unread():
                 text = part.get_payload(decode=True).decode(errors='ignore')
                 break
         out.append((mid, msg['From'], msg['Subject'], text))
-        M.store(mid, '+FLAGS', '\\Seen')
+        # УБРАНО: не помечаем письмо как прочитанное
+        # M.store(mid, '+FLAGS', '\\Seen')
     M.logout()
     return out
 
 def generate_reply(body, subject, sender):
-    """Пытаемся сначала на GPT-4, при квоте — на gpt-3.5-turbo."""
     messages = [
         {"role":"system", "content": SYSTEM_PROMPT},
         {"role":"user",   "content": f"Тема: {subject}\nОт: {sender}\n\n{body}"}
     ]
     try:
         resp = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4",
             messages=messages,
             temperature=0.2,
             max_tokens=500
         )
         print("✅ Ответ от GPT-4")
+        return resp.choices[0].message.content.strip()
     except openai.RateLimitError:
-        # падение квоты — переключаемся на 3.5
         print("⚠️ Квота на GPT-4 исчерпана, пробуем gpt-3.5-turbo")
+    try:
         resp = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=messages,
@@ -66,7 +67,10 @@ def generate_reply(body, subject, sender):
             max_tokens=500
         )
         print("✅ Ответ от gpt-3.5-turbo")
-    return resp.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip()
+    except openai.RateLimitError:
+        print("❌ Квота исчерпана и для gpt-3.5-turbo — пропускаем письмо")
+        return None
 
 def send_draft(to, subject, body):
     srv = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
@@ -80,6 +84,8 @@ def send_draft(to, subject, body):
 def main():
     for mid, frm, subj, body in fetch_unread():
         draft = generate_reply(body, subj, frm)
+        if not draft:
+            continue
         send_draft(frm, subj, draft)
         print(f"Answered {frm} – «{subj}»")
 
