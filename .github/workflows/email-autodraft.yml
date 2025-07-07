@@ -34,4 +34,6 @@ jobs:
           SMTP_USER:      ${{ secrets.SMTP_USER }}
           SMTP_PASS:      ${{ secrets.SMTP_PASS }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DRAFTS_FOLDER:    ${{ secrets.DRAFTS_FOLDER }}  # если нужно
         run: python read_and_draft.py
