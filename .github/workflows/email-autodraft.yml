@@ -2,35 +2,36 @@ name: Email Draft Bot
 
 on:
   schedule:
-    # Запускать каждые 15 минут
-    - cron: '*/15 * * * *'
+    # Запускать каждые 10 минут
+    - cron: '*/10 * * * *'
   workflow_dispatch:  # ручной запуск
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Установить Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      - name: Установить зависимости
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Запустить скрипт автодрафта
+      - name: Run draft script
         env:
-          IMAP_HOST:     ${{ secrets.IMAP_HOST }}
-          IMAP_PORT:     ${{ secrets.IMAP_PORT }}
-          IMAP_USER:     ${{ secrets.IMAP_USER }}
-          IMAP_PASS:     ${{ secrets.IMAP_PASS }}
-          SMTP_HOST:     ${{ secrets.SMTP_HOST }}
-          SMTP_PORT:     ${{ secrets.SMTP_PORT }}
-          SMTP_USER:     ${{ secrets.SMTP_USER }}
-          SMTP_PASS:     ${{ secrets.SMTP_PASS }}
+          IMAP_HOST: ${{ secrets.IMAP_HOST }}
+          IMAP_PORT: ${{ secrets.IMAP_PORT }}
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASS: ${{ secrets.IMAP_PASS }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python read_and_draft.py
