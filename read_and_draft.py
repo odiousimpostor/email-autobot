@@ -44,7 +44,7 @@ def fetch_unread():
 def generate_reply(body, subject, sender):
     # Новый вызов chat.completions.create
     resp = client.chat.completions.create(
-        model="gpt-4",
+        model="gpt-4o",
         messages=[
             {"role":"system", "content": SYSTEM_PROMPT},
             {"role":"user",   "content": f"Тема: {subject}\nОт: {sender}\n\n{body}"}
