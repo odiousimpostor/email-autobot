@@ -60,7 +60,7 @@ def generate_reply(body, subject, sender):
     """Запрос к Deepseek (правильный хост и путь)."""
     url = "https://api.deepseek.com/chat/completions"
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "X-API-Key": DEEPSEEK_API_KEY,
         "Content-Type": "application/json"
     }
     payload = {
@@ -73,6 +73,7 @@ def generate_reply(body, subject, sender):
         "temperature": 0.2
     }
     resp = requests.post(url, headers=headers, json=payload)
+    print("Status:", resp.status_code, "Response:", resp.text)
     resp.raise_for_status()
     data = resp.json()
     return data["choices"][0]["message"]["content"].strip()
