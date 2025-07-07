@@ -2,8 +2,9 @@
 import os
 import json
 import imaplib
-import email
 import time
+from email import policy
+from email.message import EmailMessage
 from openai import OpenAI
 
 # ————— Настройки из окружения —————
@@ -12,61 +13,60 @@ IMAP_PORT        = int(os.getenv('IMAP_PORT', 993))
 IMAP_USER        = os.getenv('IMAP_USER')
 IMAP_PASS        = os.getenv('IMAP_PASS')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
-# Папка для черновиков (должна существовать на сервере)
+# Название папки для черновиков. Обычно "Drafts" или "[Gmail]/Drafts", можно переопределить
 DRAFTS_FOLDER    = os.getenv('DRAFTS_FOLDER', 'Drafts')
+# Файл для хранения ID уже обработанных писем
+PROCESSED_FILE   = 'processed_ids.json'
 
 SYSTEM_PROMPT = (
     "Ты — ассистент по email. Проанализируй письмо, "
     "определи суть и предложи вежливый и по делу черновик ответа."
 )
 
-PROCESSED_FILE = 'processed_ids.json'
-# —————————————————————————
+# DeepSeek-клиент через OpenAI-совместимый SDK
+client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
-# Инициализируем клиент DeepSeek через OpenAI-совместимый SDK
-client = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com"
-)
 
 def load_processed():
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return []
+            return set(json.load(f))
+    return set()
 
-def save_processed(ids):
+def save_processed(processed_ids):
     with open(PROCESSED_FILE, 'w', encoding='utf-8') as f:
-        json.dump(ids, f, ensure_ascii=False, indent=2)
+        json.dump(list(processed_ids), f, ensure_ascii=False, indent=2)
 
 def fetch_unread(limit=5):
     """
-    Возвращает до `limit` непрочитанных писем (не меняет флаг UNSEEN).
-    Каждый элемент: (message_id, from, subject, body_text).
+    Берём до `limit` непрочитанных писем, но не снимаем флаг UNSEEN.
+    PEEK гарантирует, что IMAP-сервер не пометит письмо как прочитанное.
     """
     M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
     M.login(IMAP_USER, IMAP_PASS)
     M.select('INBOX')
-    _, data = M.search(None, 'UNSEEN')
+    typ, data = M.search(None, 'UNSEEN')
     mids = data[0].split()[:limit]
-    messages = []
+    result = []
     for mid in mids:
-        _, md = M.fetch(mid, '(RFC822)')
-        msg = email.message_from_bytes(md[0][1])
-        # Достаём текстовую часть
-        body = ""
+        # FETCH BODY.PEEK[] вместо RFC822
+        typ, msg_data = M.fetch(mid, '(BODY.PEEK[])')
+        raw = msg_data[0][1]
+        msg = EmailMessage(policy=policy.default)
+        msg = msg.policy.message_factory(raw)
+        # получить текстовую часть
+        text = ""
         for part in msg.walk():
             if part.get_content_type() == 'text/plain':
-                body = part.get_payload(decode=True).decode(errors='ignore')
+                text = part.get_content()
                 break
-        messages.append((mid.decode(), msg.get('From'), msg.get('Subject'), body))
+        result.append((mid.decode(), msg['From'], msg['Subject'], text))
     M.logout()
-    return messages
+    return result
 
 def generate_reply(body, subject, sender):
     """
-    Запрашивает черновик у DeepSeek через SDK.
-    Возвращает строку с ответом или None, если ошибка.
+    Запрос в DeepSeek через SDK.
     """
     try:
         resp = client.chat.completions.create(
@@ -86,14 +86,20 @@ def generate_reply(body, subject, sender):
 
 def create_draft_imap(to, subject, body):
     """
-    Создаёт черновик в папке DRAFTS_FOLDER через IMAP APPEND.
+    Формируем EmailMessage и кладём в папку черновиков через APPEND.
     """
-    msg = f"To: {to}\r\nSubject: Re: {subject}\r\n\r\n{body}"
+    msg = EmailMessage()
+    msg['From'] = IMAP_USER
+    msg['To']   = to
+    msg['Subject'] = f"Re: {subject}"
+    msg.set_content(body)
+    date_time = imaplib.Time2Internaldate(time.time())
+    raw_bytes = msg.as_bytes()
+
     M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
     M.login(IMAP_USER, IMAP_PASS)
     # Флаг \Draft помечает сообщение как черновик
-    date_time = imaplib.Time2Internaldate(time.time())
-    M.append(DRAFTS_FOLDER, '\\Draft', date_time, msg.encode('utf-8'))
+    M.append(DRAFTS_FOLDER, '\\Draft', date_time, raw_bytes)
     M.logout()
 
 def main():
@@ -102,10 +108,10 @@ def main():
 
     for mid, frm, subj, body in messages:
         if mid in processed:
-            print(f"🔁 {mid} уже обработано, пропускаем.")
+            print(f"🔁 Письмо {mid} уже обработано, пропускаем.")
             continue
 
-        print(f"✉️ Обрабатываем письмо {mid}: «{subj}» от {frm}")
+        print(f"✉️ Обрабатываем {mid}: «{subj}» от {frm}")
         draft = generate_reply(body, subj, frm)
         if not draft:
             print(f"⚠️ Не удалось сгенерировать черновик для {mid}.")
@@ -113,8 +119,8 @@ def main():
 
         try:
             create_draft_imap(frm, subj, draft)
-            print(f"📝 Черновик для {mid} сохранён в папку «{DRAFTS_FOLDER}».")
-            processed.append(mid)
+            print(f"📝 Черновик {mid} сохранён в «{DRAFTS_FOLDER}».")
+            processed.add(mid)
         except Exception as e:
             print(f"❌ Ошибка создания черновика для {mid}: {e}")
 
