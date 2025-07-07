@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import os, base64, json, smtplib
 import imaplib, email
-from openai import OpenAI
+import openai               # <- импорт модуля для исключений
+from openai import OpenAI  # <- клиент нового SDK
 
-# Настройки из переменных окружения
+# Настройки из окружения
 IMAP_HOST      = os.getenv('IMAP_HOST')
 IMAP_PORT      = int(os.getenv('IMAP_PORT', 993))
 IMAP_USER      = os.getenv('IMAP_USER')
@@ -18,7 +19,7 @@ SYSTEM_PROMPT  = (
     "определи суть и предложи вежливый и по делу черновик ответа."
 )
 
-# Инициализируем клиент OpenAI (новый SDK >=1.0.0)
+# Клиент OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 def fetch_unread():
@@ -42,17 +43,29 @@ def fetch_unread():
     return out
 
 def generate_reply(body, subject, sender):
-    # Новый вызов chat.completions.create
-    resp = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role":"system", "content": SYSTEM_PROMPT},
-            {"role":"user",   "content": f"Тема: {subject}\nОт: {sender}\n\n{body}"}
-        ],
-        temperature=0.2,
-        max_tokens=500
-    )
-    # В новых клиентах choices — обычный список
+    """Пытаемся сначала на GPT-4, при квоте — на gpt-3.5-turbo."""
+    messages = [
+        {"role":"system", "content": SYSTEM_PROMPT},
+        {"role":"user",   "content": f"Тема: {subject}\nОт: {sender}\n\n{body}"}
+    ]
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            temperature=0.2,
+            max_tokens=500
+        )
+        print("✅ Ответ от GPT-4")
+    except openai.RateLimitError:
+        # падение квоты — переключаемся на 3.5
+        print("⚠️ Квота на GPT-4 исчерпана, пробуем gpt-3.5-turbo")
+        resp = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            temperature=0.2,
+            max_tokens=500
+        )
+        print("✅ Ответ от gpt-3.5-turbo")
     return resp.choices[0].message.content.strip()
 
 def send_draft(to, subject, body):
