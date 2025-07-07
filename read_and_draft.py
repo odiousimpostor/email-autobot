@@ -5,7 +5,7 @@ import imaplib
 import time
 import email
 from email import policy
-from email.header import decode_header
+from email.header import decode_header, Header
 from email.message import EmailMessage
 from openai import OpenAI
 
@@ -27,10 +27,7 @@ client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
 
 def decode_mime(header_value: str) -> str:
-    """Декодирует заголовок, закодированный как RFC2047."""
-    if not header_value:
-        return ""
-    parts = decode_header(header_value)
+    parts = decode_header(header_value or "")
     decoded = ""
     for text, charset in parts:
         if isinstance(text, bytes):
@@ -53,26 +50,21 @@ def save_processed(processed_ids: set):
 
 
 def fetch_unread(limit: int = 5) -> list[tuple[str,str,str,str]]:
-    """
-    Возвращает до `limit` непрочитанных писем, не меняя флаг UNSEEN.
-    Каждый элемент: (message_id, from, subject, body_text).
-    """
     M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
     M.login(IMAP_USER, IMAP_PASS)
     M.select('INBOX')
-    typ, data = M.search(None, 'UNSEEN')
+    _, data = M.search(None, 'UNSEEN')
     mids = data[0].split()[:limit]
     messages = []
     for mid in mids:
-        # берём тело, но не меняем флаг
-        typ, msg_data = M.fetch(mid, '(BODY.PEEK[])')
+        _, msg_data = M.fetch(mid, '(BODY.PEEK[])')
         raw = msg_data[0][1]
         msg = email.message_from_bytes(raw, policy=policy.default)
 
         frm  = decode_mime(msg['From'])
         subj = decode_mime(msg['Subject'])
 
-        # Извлекаем plain text
+        # Извлекаем текст
         body = ""
         if msg.is_multipart():
             for part in msg.walk():
@@ -87,15 +79,11 @@ def fetch_unread(limit: int = 5) -> list[tuple[str,str,str,str]]:
             body = payload.decode(charset, errors='ignore')
 
         messages.append((mid.decode(), frm, subj, body))
-
     M.logout()
     return messages
 
 
 def generate_reply(body: str, subject: str, sender: str) -> str | None:
-    """
-    Запрашивает черновик у DeepSeek через SDK.
-    """
     try:
         resp = client.chat.completions.create(
             model="deepseek-chat",
@@ -114,14 +102,12 @@ def generate_reply(body: str, subject: str, sender: str) -> str | None:
 
 
 def create_draft_imap(to: str, subject: str, body: str):
-    """
-    Формирует EmailMessage и кладёт в папку черновиков через IMAP APPEND.
-    """
     msg = EmailMessage()
+    # Используем Header для правильной UTF-8 кодировки
     msg['From']    = IMAP_USER
-    msg['To']      = to
-    msg['Subject'] = f"Re: {subject}"
-    msg.set_content(body)
+    msg['To']      = Header(to, 'utf-8')
+    msg['Subject'] = Header(f"Re: {subject}", 'utf-8')
+    msg.set_content(body, charset='utf-8')
 
     date_time = imaplib.Time2Internaldate(time.time())
     raw_bytes = msg.as_bytes()
